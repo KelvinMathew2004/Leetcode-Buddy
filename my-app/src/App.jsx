@@ -3,7 +3,7 @@ import problemsData from './problems.json';
 import { Play, Check, Terminal, Layout, Code, Loader2, Send, Cpu, ChevronDown, ArrowLeft, Search } from 'lucide-react';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
-const MODEL_NAME = "gemini-flash-latest";
+const MODEL_NAME = "gemini-flash-latest"; 
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent`;
 
 // --- PROCESS JSON DATASET ---
@@ -25,6 +25,63 @@ const PROBLEMS = problemsData.map(p => {
   };
 });
 
+// --- HELPER TO FORMAT AI TEXT (Asterisks -> Bold, Backticks -> Code) ---
+const formatText = (text) => {
+  if (!text) return null;
+  const parts = text.split(/(\*\*.*?\*\*|`.*?`)/g);
+  
+  return parts.map((part, idx) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={idx} className="font-bold text-white">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={idx} className="bg-gray-700 text-blue-300 px-1 py-0.5 rounded text-sm font-mono">{part.slice(1, -1)}</code>;
+    }
+    return <span key={idx}>{part}</span>;
+  });
+};
+
+// --- HELPER TO HIGHLIGHT PYTHON CODE ---
+const highlightPython = (text) => {
+  if (!text) return "";
+  
+  // Escape HTML characters safely first
+  let html = text.replace(/[&<>"']/g, (m) => {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[m];
+  });
+
+  // 1. Extract comments and safely replace them with a placeholder
+  const comments = [];
+  html = html.replace(/(#.*)/g, (match) => {
+    comments.push(match);
+    return `___COMMENT_${comments.length - 1}___`;
+  });
+  
+  // 2. Apply Keywords and Numbers (using safe placeholders to avoid HTML injection conflicts)
+  const keywords = ['def', 'class', 'return', 'if', 'elif', 'else', 'for', 'while', 'in', 'import', 'from', 'as', 'pass', 'True', 'False', 'None', 'and', 'or', 'not', 'is'];
+  const kwRegex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
+  
+  html = html.replace(kwRegex, '___KW_START___$1___KW_END___');
+  html = html.replace(/\b(\d+)\b/g, '___NUM_START___$1___NUM_END___');
+  
+  // 3. Restore Comments with styling
+  html = html.replace(/___COMMENT_(\d+)___/g, (match, p1) => {
+    return `<span class="text-gray-500 italic">${comments[p1]}</span>`;
+  });
+  
+  // 4. Convert Keyword/Number placeholders to actual HTML spans
+  html = html.replace(/___KW_START___/g, '<span class="text-pink-400 font-medium">');
+  html = html.replace(/___KW_END___/g, '</span>');
+  
+  html = html.replace(/___NUM_START___/g, '<span class="text-purple-400">');
+  html = html.replace(/___NUM_END___/g, '</span>');
+  
+  // 5. Special styling for def/class names (colors them blue)
+  html = html.replace(/<span class="text-pink-400 font-medium">(def|class)<\/span>\s+([a-zA-Z_]\w*)/g, '<span class="text-pink-400 font-medium">$1</span> <span class="text-blue-400">$2</span>');
+
+  return html;
+};
+
 export default function App() {
   const [view, setView] = useState('home'); // 'home' or 'editor'
   const [activeProblemId, setActiveProblemId] = useState(PROBLEMS[0]?.frontendQuestionId || "1");
@@ -39,7 +96,10 @@ export default function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [output, setOutput] = useState("Run your code to see the evaluation here.");
   const [isRunning, setIsRunning] = useState(false);
+  
   const chatEndRef = useRef(null);
+  const highlightRef = useRef(null);
+  const lineNumbersRef = useRef(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,8 +136,7 @@ export default function App() {
         const response = await fetch(API_URL, {
           method: 'POST',
           headers: { 
-            'Content-Type': 'application/json',
-            'X-goog-api-key': apiKey
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(payload)
         });
@@ -134,10 +193,10 @@ export default function App() {
     Step 4: Analyze Time and Space complexity.
     
     Output Format:
-    [PASS/FAIL]
-    Time Complexity: O(?)
-    Space Complexity: O(?)
-    Feedback: [1-2 sentences on efficiency]`;
+    **[PASS/FAIL]**
+    **Time Complexity:** O(?)
+    **Space Complexity:** O(?)
+    **Feedback:** [1-2 sentences on efficiency]`;
 
     const prompt = `Evaluate this code:\n${code}`;
     
@@ -173,6 +232,18 @@ export default function App() {
       setTimeout(() => {
         e.target.selectionStart = e.target.selectionEnd = selectionStart + 1 + indent.length;
       }, 0);
+    }
+    else if (e.key === 'Backspace') {
+      // Allow fast-deleting exactly 4 spaces (a full indent) if directly behind the cursor
+      const currentLineBeforeCursor = value.substring(0, selectionStart).split('\n').pop();
+      if (selectionStart === selectionEnd && currentLineBeforeCursor.endsWith('    ')) {
+        e.preventDefault();
+        const newValue = value.substring(0, selectionStart - 4) + value.substring(selectionEnd);
+        setCode(newValue);
+        setTimeout(() => {
+          e.target.selectionStart = e.target.selectionEnd = selectionStart - 4;
+        }, 0);
+      }
     }
   };
 
@@ -360,8 +431,8 @@ export default function App() {
                           <Cpu size={16} className="text-blue-500" />
                         </div>
                       )}
-                      <div className={`p-3 rounded-lg max-w-[85%] text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-200 whitespace-pre-wrap'}`}>
-                        {msg.text}
+                      <div className={`p-3 rounded-lg max-w-[85%] text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-200 whitespace-pre-wrap leading-relaxed'}`}>
+                        {formatText(msg.text)}
                       </div>
                     </div>
                   ))}
@@ -412,15 +483,44 @@ export default function App() {
             <span className="text-green-500 font-mono text-xs px-2 py-1 bg-green-500/10 rounded">Python 3</span>
           </div>
           
-          {/* Code Editor */}
-          <div className="flex-1 relative">
-            <textarea
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="w-full h-full bg-[#0d0d0d] text-gray-300 font-mono text-sm p-4 focus:outline-none resize-none whitespace-pre"
-              spellCheck="false"
-            />
+          {/* Code Editor Container */}
+          <div className="flex-1 relative flex overflow-hidden">
+            {/* Line Numbers Gutter */}
+            <div 
+              ref={lineNumbersRef}
+              className="w-12 flex-shrink-0 bg-[#0a0a0a] border-r border-gray-800 text-gray-600 font-mono text-sm py-4 text-right pr-3 select-none overflow-hidden"
+            >
+              {code.split('\n').map((_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
+            </div>
+
+            {/* Text Area and Highlighting */}
+            <div className="flex-1 relative bg-[#0d0d0d]">
+              {/* Syntax Highlighting Overlay */}
+              <div 
+                ref={highlightRef}
+                className="absolute inset-0 p-4 font-mono text-sm whitespace-pre overflow-hidden text-gray-300 pointer-events-none"
+                dangerouslySetInnerHTML={{ __html: highlightPython(code) }}
+                aria-hidden="true"
+              />
+              <textarea
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onScroll={(e) => {
+                  if (highlightRef.current) {
+                    highlightRef.current.scrollTop = e.target.scrollTop;
+                    highlightRef.current.scrollLeft = e.target.scrollLeft;
+                  }
+                  if (lineNumbersRef.current) {
+                    lineNumbersRef.current.scrollTop = e.target.scrollTop;
+                  }
+                }}
+                className="absolute inset-0 w-full h-full font-mono text-sm p-4 focus:outline-none resize-none whitespace-pre bg-transparent text-transparent caret-white z-10"
+                spellCheck="false"
+              />
+            </div>
           </div>
 
           {/* Console Output */}
@@ -433,8 +533,8 @@ export default function App() {
               {isRunning ? (
                 <div className="text-blue-400 animate-pulse whitespace-pre-wrap">{output}</div>
               ) : (
-                <div className={`${output.includes('FAIL') ? 'text-red-400' : output.includes('PASS') ? 'text-green-400' : 'text-gray-400'} whitespace-pre-wrap`}>
-                  {output}
+                <div className={`${output.includes('FAIL') ? 'text-red-400' : output.includes('PASS') ? 'text-green-400' : 'text-gray-400'} whitespace-pre-wrap leading-relaxed`}>
+                  {formatText(output)}
                 </div>
               )}
             </div>
